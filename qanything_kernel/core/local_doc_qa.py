@@ -18,6 +18,9 @@ import base64
 import numpy as np
 import platform
 import cv2
+import asyncio
+import json
+import requests
 
 
 class LocalDocQA:
@@ -106,6 +109,33 @@ class LocalDocQA:
             debug_logger.info(f'insert time: {insert_time - end}')
             self.mysql_client.update_file_status(local_file.file_id, status='green')
             success_list.append(local_file)
+
+            # for doc in local_file.docs:
+            #     prompt = f"{doc.page_content} \n\n---\n你现在是一个文本摘要生成器，你要用超级超级精简的话，用中文提炼上面这段文字的要点成一句问题，一定不要啰嗦，一定要精简！一定要用中文！提炼的要点一定是一个能易于回答的问题。"
+            #     # nonstream_answer = ""
+            #     # async for reply in self.llm.generatorAnswer(prompt,history=[],streaming=False):
+            #     # # return reply.llm_output['answer']
+            #     #     nonstream_answer += reply.history[-1][1]
+            #     history = ""
+            #     async for answer_result in self.llm.generatorAnswer(prompt=prompt,
+            #                                                 history=[],
+            #                                                 streaming=False):
+            #         resp = answer_result.llm_output["answer"]
+            #         prompt = answer_result.prompt
+            #         if not resp[6:].startswith("[DONE]"):
+            #             history += answer_result.history[-1][1]
+
+            #         response = {"history": history,
+            #                     "prompt": prompt,
+            #                     "result": resp,
+            #         }
+            #         # debug_logger.info(f"answer_result.llm_output: {answer_result.llm_output}\n answer_result.prompt: {answer_result.prompt}\n answer_result.history: {answer_result.history}")
+            #     debug_logger.info(f"answer_result.llm_output: {answer_result.llm_output}\n answer_result.prompt: {answer_result.prompt}\n answer_result.history: {answer_result.history}")
+
+            #     debug_logger.info(f"final prompt: {prompt}")
+            #     debug_logger.info(f"final response: {response}")
+                                  
+                
         debug_logger.info(
             f"insert_to_faiss: success num: {len(success_list)}, failed num: {len(failed_list)}")
 
@@ -287,3 +317,140 @@ class LocalDocQA:
             yield response, history
         t2 = time.time()
         debug_logger.info(f"LLM time: {t2 - t1}")
+
+
+
+    async def generate_faq_questions(self, user_id, kb_id, local_files: List[LocalFile]):
+        debug_logger.info(f'generate_faq_question: {kb_id}')
+        success_list = []
+        failed_list = []
+
+        questions = []
+        for local_file in local_files:
+            start = time.time()
+            try:
+                local_file.split_file_to_docs(self.get_ocr_result)
+                if local_file.file_name.endswith('.faq'):
+                    content_length = len(local_file.docs[0].metadata['faq_dict']['question']) + len(local_file.docs[0].metadata['faq_dict']['answer'])
+                else:
+                    content_length = sum([len(doc.page_content) for doc in local_file.docs])
+            except Exception as e:
+                error_info = f'split error: {traceback.format_exc()}'
+                debug_logger.error(error_info)
+                self.mysql_client.update_file_status(local_file.file_id, status='red')
+                failed_list.append(local_file)
+                continue
+            end = time.time()
+            self.mysql_client.update_content_length(local_file.file_id, content_length)
+            debug_logger.info(f'split time: {end - start} {len(local_file.docs)}')
+            self.mysql_client.update_chunk_size(local_file.file_id, len(local_file.docs))
+            add_ids = await self.faiss_client.add_document(local_file.docs)
+            insert_time = time.time()
+            debug_logger.info(f'insert time: {insert_time - end}')
+            self.mysql_client.update_file_status(local_file.file_id, status='green')
+            success_list.append(local_file)
+
+            for doc in local_file.docs:
+                # prompt = f"{doc.page_content} \n\n---\n你现在是一个文本摘要生成器，你要用超级超级精简的话，用中文提炼上面这段文字的要点并改写成一个问句形式的问题，一定不要啰嗦，一定要精简！一定要用中文！提炼的要点一定是一个能易于回答的问题。"
+                prompt = f"{doc.page_content} \n\n---\n你现在是一个文本摘要生成器，你要用超级超级精简的话，用中文提炼上面这段文字的要点成一句问题，一定不要啰嗦，一定要精简！一定要用中文！提炼的要点一定是一个能易于回答的问题。"
+                # nonstream_answer = ""
+                # async for reply in self.llm.generatorAnswer(prompt,history=[],streaming=False):
+                # # return reply.llm_output['answer']
+                #     nonstream_answer += reply.history[-1][1]
+                history = ""
+                async for answer_result in self.llm.generatorAnswer(prompt=prompt,
+                                                            history=[],
+                                                            streaming=False):
+                    resp = answer_result.llm_output["answer"]
+                    prompt = answer_result.prompt
+                    if not resp[6:].startswith("[DONE]"):
+                        history += answer_result.history[-1][1]
+
+                    response = {"history": history,
+                                "prompt": prompt,
+                                "result": resp,
+                    }
+                    await asyncio.sleep(5)
+                #     # debug_logger.info(f"answer_result.llm_output: {answer_result.llm_output}\n answer_result.prompt: {answer_result.prompt}\n answer_result.history: {answer_result.history}")
+                # debug_logger.info(f"answer_result.llm_output: {answer_result.llm_output}\n answer_result.prompt: {answer_result.prompt}\n answer_result.history: {answer_result.history}")
+
+                # debug_logger.info(f"final prompt: {prompt}")
+                # debug_logger.info(f"final response: {history}")
+                questions.append(history)
+                                  
+        # file_ids = [file.file_id for file in local_files]
+        # debug_logger.info(f"file_ids: {file_ids}")
+        # self.faiss_client.delete_documents(kb_id,file_ids)
+        # self.mysql_client.delete_files(kb_id,file_ids)
+        debug_logger.info(
+            f"generate_faq_question: success num: {len(questions)}")
+
+        custom_prompt = None
+        answers = []
+        count = 0
+        for question in questions:
+            async for resp, history in self.get_knowledge_based_answer(custom_prompt=custom_prompt,
+                                                                        query=question, 
+                                                                        kb_ids=kb_id, 
+                                                                        chat_history=[], 
+                                                                        streaming=False, 
+                                                                        rerank=True,
+                                                                        need_web_search=False):            
+                pass
+            # await history
+
+            count +=1
+            debug_logger.info(f"get_knowledge_based_answer result: {history[-1][0]}")
+            debug_logger.info(f"get_knowledge_based_answer history: {history[-1][-1]}")
+            debug_logger.info(f"get_knowledge_based_answer count: {count}")
+            answers.append(history[-1][-1])
+            send_faq_request(question=question,answer=history[-1][-1],kb_id=kb_id)
+            await asyncio.sleep(5)
+            
+        # if exist_file_names:
+        #     msg = f'warning，当前的mode是soft，无法上传同名文件{exist_file_names}，如果想强制上传同名文件，请设置mode：strong'
+        # else:
+        #     msg = "success，后台正在飞速上传文件，请耐心等待"
+
+        msg = "success，后台正在生成问答对，请耐心等待"
+
+        file_ids = [file.file_id for file in local_files]
+        debug_logger.info(f"file_ids: {file_ids}")
+        self.faiss_client.delete_documents(kb_id,file_ids)
+        self.mysql_client.delete_files(kb_id,file_ids)
+        return questions
+
+
+def send_faq_request(question,answer,kb_id):
+    url = 'http://0.0.0.0:8777/api/local_doc_qa/upload_faqs'
+    user_id = 'zzp'
+    headers = {
+        'content-type': 'application/json'
+    }
+    
+
+    faqs = [
+        {
+            'question':question,
+            'answer':answer,
+            'nos_key':""
+        }
+    ]
+
+    data = {
+        'user_id': user_id,
+        'kb_id': kb_id+'_FAQ',
+        'faqs': faqs
+    }
+    try:
+        start_time = time.time()
+        response = requests.post(url=url, headers=headers, data=json.dumps(data), timeout=1)
+        end_time = time.time()
+        # response_times.append(end_time - start_time)
+        res = response.json()
+        print(res['response'])
+        print(f"响应状态码: {response.status_code}, 响应时间: {end_time - start_time}秒")
+    except Exception as e:
+        print(f"请求发送失败: {e}")
+
+

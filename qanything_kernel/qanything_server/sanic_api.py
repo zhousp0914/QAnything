@@ -225,6 +225,8 @@ app.add_route(get_bot_info, "/api/local_doc_qa/get_bot_info", methods=['POST']) 
 app.add_route(upload_faqs, "/api/local_doc_qa/upload_faqs", methods=['POST'])  # tags=["上传FAQ"]
 app.add_route(get_file_base64, "/api/local_doc_qa/get_file_base64", methods=['POST'])  # tags=["获取文件base64"]
 app.add_route(get_qa_info, "/api/local_doc_qa/get_qa_info", methods=['POST'])  # tags=["获取QA信息"]
+app.add_route(generate_faq, "/api/local_doc_qa/generate_faq", methods=['POST'])  # tags=["生成FAQ"]
+
 
 if __name__ == "__main__":
     # if args.use_openai_api:
@@ -240,6 +242,8 @@ if __name__ == "__main__":
     #     app.run(host=args.host, port=args.port, single_process=True, access_log=False)
     # 由于有用户启动时上下文环境报错，使用单进程模式：
     app.run(host=args.host, port=args.port, single_process=True, access_log=False)
+    # app.run(host=args.host, port=args.port, workers=2, access_log=False)
+
 
 
 

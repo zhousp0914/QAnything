@@ -254,6 +254,10 @@ class LocalFile:
             else:
                 new_doc.metadata['faq_dict'] = doc.metadata['faq_dict']
             new_docs.append(new_doc)
+            
+            # get summary for each doc
+            debug_logger.info(f"splited doc num: {idx}, content： {new_doc}")
+
 
         if new_docs:
             debug_logger.info('langchain analysis content head: %s', new_docs[0].page_content[:100])

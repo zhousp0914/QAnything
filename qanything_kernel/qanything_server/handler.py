@@ -21,7 +21,7 @@ import base64
 __all__ = ["new_knowledge_base", "upload_files", "list_kbs", "list_docs", "delete_knowledge_base", "delete_docs",
            "rename_knowledge_base", "get_total_status", "clean_files_by_status", "upload_weblink", "local_doc_chat",
            "document", "new_bot", "delete_bot", "update_bot", "get_bot_info", "upload_faqs", "get_file_base64",
-           "get_qa_info"]
+           "get_qa_info","generate_faq"]
 
 INVALID_USER_ID = f"fail, Invalid user_id: . user_id 必须只含有字母，数字和下划线且字母开头"
 
@@ -676,6 +676,7 @@ async def get_bot_info(req: request):
 
 async def upload_faqs(req: request):
     local_doc_qa: LocalDocQA = req.app.ctx.local_doc_qa
+    debug_logger.info("upload_faqs req: {req}")
     user_id = safe_get(req, 'user_id')
     if user_id is None:
         return sanic_json({"code": 2002, "msg": f'输入非法！request.json：{req.json}，请检查！'})
@@ -828,3 +829,105 @@ async def get_qa_info(req: request):
         msg = f"检索到的Log数为{len(qa_infos)}，一次返回所有数据"
         page_id = 0
     return sanic_json({"code": 200, "msg": msg, "page_id": page_id, "qa_infos": qa_infos})
+
+
+async def generate_faq(req: request):
+    local_doc_qa: LocalDocQA = req.app.ctx.local_doc_qa
+    user_id = safe_get(req, 'user_id')
+    if user_id is None:
+        return sanic_json({"code": 2002, "msg": f'输入非法！request.form: {req.form}，request.files: {req.files}请检查！'})
+    is_valid = validate_user_id(user_id)
+    if not is_valid:
+        return sanic_json({"code": 2005, "msg": get_invalid_user_id_msg(user_id=user_id)})
+    debug_logger.info("upload_files_for_faq %s", user_id)
+    kb_id = safe_get(req, 'kb_id')
+    mode = safe_get(req, 'mode', default='soft')  # soft代表不上传同名文件，strong表示强制上传同名文件
+    debug_logger.info("mode: %s", mode)
+    use_local_file = safe_get(req, 'use_local_file', 'false')
+    if use_local_file == 'true':
+        files = read_files_with_extensions()
+    else:
+        files = req.files.getlist('files')
+
+    not_exist_kb_ids = local_doc_qa.mysql_client.check_kb_exist(user_id, [kb_id])
+    if not_exist_kb_ids:
+        msg = "invalid kb_id: {}, please check...".format(not_exist_kb_ids)
+        return sanic_json({"code": 2001, "msg": msg, "data": [{}]})
+
+    data = []
+    local_files = []
+    file_names = []
+    for file in files:
+        if isinstance(file, str):
+            file_name = os.path.basename(file)
+        else:
+            debug_logger.info('ori name: %s', file.name)
+            file_name = urllib.parse.unquote(file.name, encoding='UTF-8')
+            debug_logger.info('decode name: %s', file_name)
+        # 删除掉全角字符
+        file_name = re.sub(r'[\uFF01-\uFF5E\u3000-\u303F]', '', file_name)
+        file_name = file_name.replace("/", "_")
+        debug_logger.info('cleaned name: %s', file_name)
+        file_name = truncate_filename(file_name)
+        file_names.append(file_name)
+
+    # exist_file_names = []
+    # if mode == 'soft':
+    #     exist_files = local_doc_qa.mysql_client.check_file_exist_by_name(user_id, kb_id, file_names)
+    #     exist_file_names = [f[1] for f in exist_files]
+
+    now = datetime.now()
+    timestamp = now.strftime("%Y%m%d%H%M")
+
+    for file, file_name in zip(files, file_names):
+        # if file_name in exist_file_names:
+        #     continue
+        file_id, msg = local_doc_qa.mysql_client.add_file(user_id, kb_id, file_name, timestamp)
+        debug_logger.info(f"{file_name}, {file_id}, {msg}")
+        local_file = LocalFile(user_id, kb_id, file, file_id, file_name, local_doc_qa.embeddings)
+        local_doc_qa.mysql_client.update_file_path(file_id, local_file.file_path)
+        local_files.append(local_file)
+        local_doc_qa.mysql_client.update_file_size(file_id, len(local_file.file_content))
+        data.append(
+            {"file_id": file_id, "file_name": file_name, "status": "gray", "bytes": len(local_file.file_content),
+             "timestamp": timestamp})
+
+    asyncio.create_task(local_doc_qa.generate_faq_questions(user_id, kb_id, local_files))
+    # questions = await task
+    # debug_logger.info(f"result: {questions}")
+
+    # custom_prompt = None
+    # answers = []
+    # count = 0
+    # for question in questions:
+    #     async for resp, history in local_doc_qa.get_knowledge_based_answer(custom_prompt=custom_prompt,
+    #                                                                 query=question, 
+    #                                                                 kb_ids=kb_id, 
+    #                                                                 chat_history=[], 
+    #                                                                 streaming=False, 
+    #                                                                 rerank=True,
+    #                                                                 need_web_search=False):            
+    #         pass
+    #     count +=1
+    #     debug_logger.info(f"get_knowledge_based_answer result: {history[-1][0]}")
+    #     debug_logger.info(f"get_knowledge_based_answer history: {history[-1][-1]}")
+    #     debug_logger.info(f"get_knowledge_based_answer count: {count}")
+    #     answers.append(history[-1][-1])
+    #     send_faq_request(question=question,answer=history[-1][-1],kb_id=kb_id)
+    #     # await asyncio.sleep(2)
+        
+    # # if exist_file_names:
+    # #     msg = f'warning，当前的mode是soft，无法上传同名文件{exist_file_names}，如果想强制上传同名文件，请设置mode：strong'
+    # # else:
+    # #     msg = "success，后台正在飞速上传文件，请耐心等待"
+
+    # msg = "success，后台正在生成问答对，请耐心等待"
+
+    # file_ids = [file.file_id for file in local_files]
+    # debug_logger.info(f"file_ids: {file_ids}")
+    # local_doc_qa.faiss_client.delete_documents(kb_id,file_ids)
+    # local_doc_qa.mysql_client.delete_files(kb_id,file_ids)
+    # return sanic_json({"code": 200, "msg": msg, "data": data})
+    
+    msg = "success，后台正在生成问答对，请耐心等待"
+    return sanic_json({"code": 200, "msg": msg, "data": data})
